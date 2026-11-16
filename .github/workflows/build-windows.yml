@@ -1,0 +1,55 @@
+Copy-Item $qcpCpp.FullName '.\source\src\qcustomplot.cpp' -Force
+          Copy-Item $qcpH.FullName '.\source\src\qcustomplot.h' -Force
+
+      - name: Build SerialTest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $PWD 'source\src'
+          Push-Location $src
+          qmake SerialTest.pro 'CONFIG+=release'
+          if ($LASTEXITCODE -ne 0) { throw 'qmake failed' }
+          mingw32-make -j2
+          if ($LASTEXITCODE -ne 0) { throw 'mingw32-make failed' }
+          Pop-Location
+
+          $exe = Get-ChildItem $src -Filter 'SerialTest.exe' -Recurse | Where-Object { $_.FullName -match '\\release\\SerialTest\.exe$' } | Select-Object -First 1
+          if (!$exe) { $exe = Get-ChildItem $src -Filter 'SerialTest.exe' -Recurse | Select-Object -First 1 }
+          if (!$exe) { throw 'Build succeeded but SerialTest.exe was not found' }
+
+          $deploy = Join-Path $PWD 'SerialTest_四通道可运行版'
+          New-Item -ItemType Directory -Force -Path $deploy | Out-Null
+          Copy-Item $exe.FullName (Join-Path $deploy 'SerialTest.exe') -Force
+          windeployqt --release --compiler-runtime --no-translations (Join-Path $deploy 'SerialTest.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
+
+          # Keep the user's existing preferences and sample/data files from the supplied runtime package.
+          # The supplied ZIP contains a legacy-encoded Chinese folder name.
+          # Locate preference.ini recursively instead of assuming its folder name.
+          $pref = Get-ChildItem '.\original' -Filter 'preference.ini' -File -Recurse | Select-Object -First 1
+          if ($pref) {
+            $runtimeRoot = $pref.Directory.FullName
+            Copy-Item $pref.FullName $deploy -Force
+            # Keep the two supplied sample/data files too (their ZIP names may be legacy encoded).
+            Get-ChildItem $runtimeRoot -File | Where-Object { $_.Name -like '#U*' } |
+              Copy-Item -Destination $deploy -Force
+          } else {
+            Write-Warning 'preference.ini was not found in the original runtime ZIP; the app will use default settings.'
+          }
+
+          @'
+          Four-channel SerialTest Windows build
+          
+          This is a community build artifact compiled by GitHub Actions from the supplied modified source.
+          Before replacing your existing application, make a backup of its whole folder and preference.ini.
+          Test Bluetooth/serial connection, all four channels, X/Y zoom, pan, clear, and data saving first.
+          '@ | Set-Content -Encoding UTF8 (Join-Path $deploy '使用说明.txt')
+
+          Compress-Archive -Path (Join-Path $deploy '*') -DestinationPath (Join-Path $PWD 'SerialTest_四通道可运行版_Windows.zip') -Force
+
+      - name: Upload Windows application package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SerialTest-四通道-Windows
+          path: SerialTest_四通道可运行版_Windows.zip
+          if-no-files-found: error
