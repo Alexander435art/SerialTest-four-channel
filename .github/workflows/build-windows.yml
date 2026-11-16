@@ -1,4 +1,43 @@
-Copy-Item $qcpCpp.FullName '.\source\src\qcustomplot.cpp' -Force
+name: Build SerialTest for Windows
+
+'on': workflow_dispatch
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Checkout build inputs
+        uses: actions/checkout@v4
+
+      - name: Install Qt 5.15.2 and MinGW 8.1.0
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          host: windows
+          target: desktop
+          arch: win64_mingw81
+          tools: 'tools_mingw,qt.tools.win64_mingw810'
+          cache: true
+
+      - name: Extract source and original runtime package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!(Test-Path '.\SerialTest_four_channel_source.zip')) { throw 'Missing SerialTest_four_channel_source.zip' }
+          if (!(Test-Path '.\蓝牙串口上位机_original.zip')) { throw 'Missing 蓝牙串口上位机_original.zip' }
+          Expand-Archive -LiteralPath '.\SerialTest_four_channel_source.zip' -DestinationPath '.\source' -Force
+          Expand-Archive -LiteralPath '.\蓝牙串口上位机_original.zip' -DestinationPath '.\original' -Force
+
+          # The upstream project ships qcustomplot.h but not qcustomplot.cpp.
+          # Fetch the matching QCustomPlot 2.1.1 source and compile it into SerialTest.
+          Invoke-WebRequest -Uri 'https://www.qcustomplot.com/release/2.1.1/QCustomPlot-source.tar.gz' -OutFile '.\qcustomplot.tar.gz'
+          New-Item -ItemType Directory -Force -Path '.\qcustomplot' | Out-Null
+          tar -xzf '.\qcustomplot.tar.gz' -C '.\qcustomplot'
+          $qcpCpp = Get-ChildItem '.\qcustomplot' -Filter 'qcustomplot.cpp' -Recurse | Select-Object -First 1
+          $qcpH = Get-ChildItem '.\qcustomplot' -Filter 'qcustomplot.h' -Recurse | Select-Object -First 1
+          if (!$qcpCpp -or !$qcpH) { throw 'Could not find qcustomplot.cpp/qcustomplot.h in QCustomPlot 2.1.1 archive' }
+          Copy-Item $qcpCpp.FullName '.\source\src\qcustomplot.cpp' -Force
           Copy-Item $qcpH.FullName '.\source\src\qcustomplot.h' -Force
 
       - name: Build SerialTest
