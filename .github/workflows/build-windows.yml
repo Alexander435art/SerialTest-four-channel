@@ -1,61 +1,88 @@
-          Expand-Archive -LiteralPath '.\SerialTest_four_channel_source.zip' -DestinationPath '.\source' -Force
-          Expand-Archive -LiteralPath '.\蓝牙串口上位机_original.zip' -DestinationPath '.\original' -Force
+         name: Build SerialTest for Windows
 
-          # The upstream project ships qcustomplot.h but not qcustomplot.cpp.
-          # Fetch the matching QCustomPlot 2.1.1 source and compile it into SerialTest.
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Qt 5.15.2 and MinGW 8.1.0
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          host: windows
+          target: desktop
+          arch: win64_mingw81
+          tools: 'tools_mingw,qt.tools.win64_mingw810'
+          cache: true
+
+      - name: Extract source and original runtime package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sourceZip = '.\SerialTest_four_channel_source.zip'
+          $runtimeZip = '.\蓝牙串口上位机_original.zip'
+          if (!(Test-Path -LiteralPath $sourceZip)) { throw "Missing $sourceZip in repository root" }
+          if (!(Test-Path -LiteralPath $runtimeZip)) { throw "Missing $runtimeZip in repository root" }
+
+          Expand-Archive -LiteralPath $sourceZip -DestinationPath '.\source' -Force
+          Expand-Archive -LiteralPath $runtimeZip -DestinationPath '.\original' -Force
+
+          $project = Get-ChildItem '.\source' -Filter 'SerialTest.pro' -File -Recurse | Select-Object -First 1
+          if (!$project) { throw 'Could not find SerialTest.pro inside the source ZIP' }
+          $srcDir = $project.Directory.FullName
+
           Invoke-WebRequest -Uri 'https://www.qcustomplot.com/release/2.1.1/QCustomPlot-source.tar.gz' -OutFile '.\qcustomplot.tar.gz'
           New-Item -ItemType Directory -Force -Path '.\qcustomplot' | Out-Null
           tar -xzf '.\qcustomplot.tar.gz' -C '.\qcustomplot'
-          $qcpCpp = Get-ChildItem '.\qcustomplot' -Filter 'qcustomplot.cpp' -Recurse | Select-Object -First 1
-          $qcpH = Get-ChildItem '.\qcustomplot' -Filter 'qcustomplot.h' -Recurse | Select-Object -First 1
-          if (!$qcpCpp -or !$qcpH) { throw 'Could not find qcustomplot.cpp/qcustomplot.h in QCustomPlot 2.1.1 archive' }
-          Copy-Item $qcpCpp.FullName '.\source\src\qcustomplot.cpp' -Force
-          Copy-Item $qcpH.FullName '.\source\src\qcustomplot.h' -Force
+          $qcpCpp = Get-ChildItem '.\qcustomplot' -Filter 'qcustomplot.cpp' -File -Recurse | Select-Object -First 1
+          $qcpH = Get-ChildItem '.\qcustomplot' -Filter 'qcustomplot.h' -File -Recurse | Select-Object -First 1
+          if (!$qcpCpp -or !$qcpH) { throw 'Could not find QCustomPlot source files in the downloaded archive' }
+          Copy-Item $qcpCpp.FullName (Join-Path $srcDir 'qcustomplot.cpp') -Force
+          Copy-Item $qcpH.FullName (Join-Path $srcDir 'qcustomplot.h') -Force
+          "SERIALTEST_SOURCE_DIR=$srcDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build SerialTest
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $src = Join-Path $PWD 'source\src'
-          Push-Location $src
+          Push-Location $env:SERIALTEST_SOURCE_DIR
           qmake SerialTest.pro 'CONFIG+=release'
           if ($LASTEXITCODE -ne 0) { throw 'qmake failed' }
           mingw32-make -j2
           if ($LASTEXITCODE -ne 0) { throw 'mingw32-make failed' }
           Pop-Location
 
-          $exe = Get-ChildItem $src -Filter 'SerialTest.exe' -Recurse | Where-Object { $_.FullName -match '\\release\\SerialTest\.exe$' } | Select-Object -First 1
-          if (!$exe) { $exe = Get-ChildItem $src -Filter 'SerialTest.exe' -Recurse | Select-Object -First 1 }
-          if (!$exe) { throw 'Build succeeded but SerialTest.exe was not found' }
-
+          $exe = Get-ChildItem $env:SERIALTEST_SOURCE_DIR -Filter 'SerialTest.exe' -File -Recurse | Select-Object -First 1
+          if (!$exe) { throw 'Build completed but SerialTest.exe was not found' }
           $deploy = Join-Path $PWD 'SerialTest_四通道可运行版'
           New-Item -ItemType Directory -Force -Path $deploy | Out-Null
           Copy-Item $exe.FullName (Join-Path $deploy 'SerialTest.exe') -Force
           windeployqt --release --compiler-runtime --no-translations (Join-Path $deploy 'SerialTest.exe')
           if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
 
-          # Keep the user's existing preferences and sample/data files from the supplied runtime package.
-          # The supplied ZIP contains a legacy-encoded Chinese folder name.
-          # Locate preference.ini recursively instead of assuming its folder name.
           $pref = Get-ChildItem '.\original' -Filter 'preference.ini' -File -Recurse | Select-Object -First 1
           if ($pref) {
-            $runtimeRoot = $pref.Directory.FullName
             Copy-Item $pref.FullName $deploy -Force
-            # Keep the two supplied sample/data files too (their ZIP names may be legacy encoded).
-            Get-ChildItem $runtimeRoot -File | Where-Object { $_.Name -like '#U*' } |
-              Copy-Item -Destination $deploy -Force
-          } else {
-            Write-Warning 'preference.ini was not found in the original runtime ZIP; the app will use default settings.'
+            foreach ($dataName in @('压力', '拉伸')) {
+              $dataFile = Get-ChildItem $pref.Directory.FullName -File | Where-Object { $_.Name -eq $dataName } | Select-Object -First 1
+              if ($dataFile) { Copy-Item $dataFile.FullName $deploy -Force }
+            }
           }
 
           @'
-          Four-channel SerialTest Windows build
-          
-          This is a community build artifact compiled by GitHub Actions from the supplied modified source.
-          Before replacing your existing application, make a backup of its whole folder and preference.ini.
-          Test Bluetooth/serial connection, all four channels, X/Y zoom, pan, clear, and data saving first.
+          SerialTest four-channel Windows build
+          Backup your existing application folder before replacing it.
+          Test Bluetooth/serial connection, all four channels, X/Y zoom and pan, and data saving before regular use.
           '@ | Set-Content -Encoding UTF8 (Join-Path $deploy '使用说明.txt')
-
           Compress-Archive -Path (Join-Path $deploy '*') -DestinationPath (Join-Path $PWD 'SerialTest_四通道可运行版_Windows.zip') -Force
 
       - name: Upload Windows application package
