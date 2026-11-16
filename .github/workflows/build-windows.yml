@@ -1,4 +1,4 @@
-         name: Build SerialTest for Windows
+name: Build SerialTest for Windows
 
 'on':
   workflow_dispatch:
